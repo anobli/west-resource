@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -e
+
+exec 3>&1
+exec 1>&2
+
+destination="$1"
+
+if [ -z "$destination" ]; then
+    echo "Error: destination directory not specified" >&2
+    exit 1
+fi
+
+payload=$(mktemp)
+cat > "$payload" <&0
+
+manifest_url=$(jq -r '.source.manifest_url // "https://github.com/zephyrproject-rtos/zephyr"' < "$payload")
+manifest_revision=$(jq -r '.source.manifest_revision // "main"' < "$payload")
+manifest_path=$(jq -r '.source.manifest_path // "west.yml"' < "$payload")
+target_commit=$(jq -r '.version.commit' < "$payload")
+
+echo "Initializing west workspace in $destination"
+echo "Manifest URL: $manifest_url"
+echo "Manifest revision: $manifest_revision"
+echo "Target commit: $target_commit"
+
+# Create destination directory
+mkdir -p "$destination"
+cd "$destination"
+
+# Initialize west workspace
+west init -m "$manifest_url" --mr "$manifest_revision" .
+
+# If we have a specific commit, checkout that version of the manifest
+if [ -n "$target_commit" ] && [ "$target_commit" != "null" ]; then
+    cd zephyr
+    git checkout "$target_commit"
+    cd ..
+fi
+
+# Update all repositories
+echo "Updating west workspace..."
+west update
+
+# Get actual commit info
+cd zephyr
+actual_commit=$(git rev-parse HEAD)
+commit_message=$(git log -1 --pretty=format:"%s")
+commit_author=$(git log -1 --pretty=format:"%an")
+commit_date=$(git log -1 --pretty=format:"%ci")
+cd ..
+
+# Create metadata
+metadata=$(jq -n \
+    --arg commit "$actual_commit" \
+    --arg message "$commit_message" \
+    --arg author "$commit_author" \
+    --arg date "$commit_date" \
+    --arg manifest_url "$manifest_url" \
+    --arg manifest_revision "$manifest_revision" \
+    '{
+        version: {commit: $commit},
+        metadata: [
+            {name: "commit", value: $commit},
+            {name: "message", value: $message},
+            {name: "author", value: $author},
+            {name: "date", value: $date},
+            {name: "manifest_url", value: $manifest_url},
+            {name: "manifest_revision", value: $manifest_revision}
+        ]
+    }')
+
+rm "$payload"
+
+# Output metadata to stdout (fd 3)
+echo "$metadata" >&3

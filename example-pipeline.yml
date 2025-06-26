@@ -1,0 +1,44 @@
+resource_types:
+- name: west-resource
+  type: docker-image
+  source:
+    repository: west-resource
+    tag: latest
+
+resources:
+- name: zephyr-source
+  type: west-resource
+  source:
+    manifest_url: https://github.com/zephyrproject-rtos/zephyr
+    manifest_revision: main
+
+jobs:
+- name: test-zephyr-fetch
+  plan:
+  - get: zephyr-source
+    trigger: true
+  - task: verify-workspace
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: zephyrprojectrtos/ci
+          tag: latest
+      inputs:
+      - name: zephyr-source
+      run:
+        path: bash
+        args:
+        - -c
+        - |
+          echo "=== Zephyr workspace contents ==="
+          ls -la zephyr-source/
+          echo
+          echo "=== West status ==="
+          cd zephyr-source
+          west status
+          echo
+          echo "=== Zephyr version ==="
+          cd zephyr
+          git log -1 --oneline

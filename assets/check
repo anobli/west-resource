@@ -1,0 +1,36 @@
+#!/bin/bash
+
+set -e
+
+exec 3>&1
+exec 1>&2
+
+payload=$(mktemp)
+cat > "$payload" <&0
+
+manifest_url=$(jq -r '.source.manifest_url // "https://github.com/zephyrproject-rtos/zephyr"' < "$payload")
+manifest_revision=$(jq -r '.source.manifest_revision // "main"' < "$payload")
+
+current_version=$(jq -r '.version.commit // ""' < "$payload")
+
+# Get latest commit from remote without cloning
+latest_commit=$(git ls-remote "$manifest_url" "refs/heads/$manifest_revision" | cut -f1)
+
+if [ -z "$latest_commit" ]; then
+    echo "Error: Could not fetch latest commit from $manifest_url branch $manifest_revision" >&2
+    exit 1
+fi
+
+# Generate version list
+if [ -n "$current_version" ] && [ "$current_version" != "null" ] && [ "$current_version" != "" ] && [ "$current_version" = "$latest_commit" ]; then
+    # No new version
+    versions=$(jq -n --arg commit "$current_version" '[{commit: $commit}]')
+else
+    # New version available
+    versions=$(jq -n --arg commit "$latest_commit" '[{commit: $commit}]')
+fi
+
+rm "$payload"
+
+# Output versions to stdout (fd 3)
+echo "$versions" >&3
