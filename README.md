@@ -15,6 +15,7 @@ docker build -t west-resource .
 | `manifest_url` | No | `https://github.com/zephyrproject-rtos/zephyr` | URL of the west manifest repository |
 | `manifest_revision` | No | `main` | Branch/tag of the manifest repository |
 | `manifest_path` | No | `west.yml` | Path to the west manifest file |
+| `zephyr_path` | No | `zephyr` | Path to the Zephyr repository within the west workspace (for external modules use a different path) |
 
 ## Example Pipeline Usage
 
