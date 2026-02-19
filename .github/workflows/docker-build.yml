@@ -24,6 +24,11 @@ jobs:
       packages: write
 
     steps:
+      - name: Free disk space
+        run: |
+          docker system prune -a -f --volumes
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
