@@ -18,11 +18,13 @@ cat > "$payload" <&0
 manifest_url=$(jq -r '.source.manifest_url // "https://github.com/zephyrproject-rtos/zephyr"' < "$payload")
 manifest_revision=$(jq -r '.source.manifest_revision // "main"' < "$payload")
 manifest_path=$(jq -r '.source.manifest_path // "west.yml"' < "$payload")
+zephyr_path=$(jq -r '.source.zephyr_path // "zephyr"' < "$payload")
 target_commit=$(jq -r '.version.commit' < "$payload")
 
 echo "Initializing west workspace in $destination"
 echo "Manifest URL: $manifest_url"
 echo "Manifest revision: $manifest_revision"
+echo "Zephyr path: $zephyr_path"
 echo "Target commit: $target_commit"
 
 # Create destination directory
@@ -34,9 +36,13 @@ west init -m "$manifest_url" --mr "$manifest_revision" .
 
 # If we have a specific commit, checkout that version of the manifest
 if [ -n "$target_commit" ] && [ "$target_commit" != "null" ]; then
-    cd zephyr
-    git checkout "$target_commit"
-    cd ..
+    if [ -d "$zephyr_path" ]; then
+        cd "$zephyr_path"
+        git checkout "$target_commit"
+        cd ..
+    else
+        echo "Warning: Zephyr path '$zephyr_path' not found, skipping commit checkout"
+    fi
 fi
 
 # Update all repositories
@@ -44,12 +50,20 @@ echo "Updating west workspace..."
 west update
 
 # Get actual commit info
-cd zephyr
-actual_commit=$(git rev-parse HEAD)
-commit_message=$(git log -1 --pretty=format:"%s")
-commit_author=$(git log -1 --pretty=format:"%an")
-commit_date=$(git log -1 --pretty=format:"%ci")
-cd ..
+if [ -d "$zephyr_path" ]; then
+    cd "$zephyr_path"
+    actual_commit=$(git rev-parse HEAD)
+    commit_message=$(git log -1 --pretty=format:"%s")
+    commit_author=$(git log -1 --pretty=format:"%an")
+    commit_date=$(git log -1 --pretty=format:"%ci")
+    cd ..
+else
+    echo "Warning: Zephyr path '$zephyr_path' not found, using manifest repo info"
+    actual_commit=$(git rev-parse HEAD)
+    commit_message=$(git log -1 --pretty=format:"%s")
+    commit_author=$(git log -1 --pretty=format:"%an")
+    commit_date=$(git log -1 --pretty=format:"%ci")
+fi
 
 # Create metadata
 metadata=$(jq -n \
