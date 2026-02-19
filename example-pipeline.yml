@@ -2,7 +2,7 @@ resource_types:
 - name: west-resource
   type: docker-image
   source:
-    repository: west-resource
+    repository: ghcr.io/anobli/west-resource
     tag: latest
 
 resources:
