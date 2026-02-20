@@ -18,74 +18,50 @@ cat > "$payload" <&0
 manifest_url=$(jq -r '.source.manifest_url // "https://github.com/zephyrproject-rtos/zephyr"' < "$payload")
 manifest_revision=$(jq -r '.source.manifest_revision // "main"' < "$payload")
 manifest_path=$(jq -r '.source.manifest_path // "west.yml"' < "$payload")
-zephyr_path=$(jq -r '.source.zephyr_path // "zephyr"' < "$payload")
-target_commit=$(jq -r '.version.commit' < "$payload")
+manifest_sha256=$(jq -r '.version.manifest_sha256 // ""' < "$payload")
 
 echo "Initializing west workspace in $destination"
 echo "Manifest URL: $manifest_url"
 echo "Manifest revision: $manifest_revision"
-echo "Zephyr path: $zephyr_path"
-echo "Target commit: $target_commit"
 
-# Create destination directory
 mkdir -p "$destination"
 cd "$destination"
 
-# Initialize west workspace
-west init -m "$manifest_url" --mr "$manifest_revision" .
+west init -m "$manifest_url" --mr "$manifest_revision" --mf "$manifest_path" .
 
-# If we have a specific commit, checkout that version of the manifest
-if [ -n "$target_commit" ] && [ "$target_commit" != "null" ]; then
-    if [ -d "$zephyr_path" ]; then
-        cd "$zephyr_path"
-        git checkout "$target_commit"
-        cd ..
-    else
-        echo "Warning: Zephyr path '$zephyr_path' not found, skipping commit checkout"
-    fi
-fi
-
-# Update all repositories
 echo "Updating west workspace..."
 west update
 
-# Get actual commit info
-if [ -d "$zephyr_path" ]; then
-    cd "$zephyr_path"
-    actual_commit=$(git rev-parse HEAD)
-    commit_message=$(git log -1 --pretty=format:"%s")
-    commit_author=$(git log -1 --pretty=format:"%an")
-    commit_date=$(git log -1 --pretty=format:"%ci")
-    cd ..
-else
-    echo "Warning: Zephyr path '$zephyr_path' not found, using manifest repo info"
-    actual_commit=$(git rev-parse HEAD)
-    commit_message=$(git log -1 --pretty=format:"%s")
-    commit_author=$(git log -1 --pretty=format:"%an")
-    commit_date=$(git log -1 --pretty=format:"%ci")
-fi
+# Retrieve commit info from the manifest project (works for any manifest URL,
+# not just zephyr). west config manifest.path gives the path within the workspace
+# where the manifest repo was cloned.
+manifest_project_path=$(west config manifest.path)
+actual_commit=$(cd "$manifest_project_path" && git rev-parse HEAD)
+commit_message=$(cd "$manifest_project_path" && git log -1 --pretty=format:"%s")
+commit_author=$(cd "$manifest_project_path" && git log -1 --pretty=format:"%an")
+commit_date=$(cd "$manifest_project_path" && git log -1 --pretty=format:"%ci")
 
-# Create metadata
-metadata=$(jq -n \
+result=$(jq -n \
     --arg commit "$actual_commit" \
     --arg message "$commit_message" \
     --arg author "$commit_author" \
     --arg date "$commit_date" \
     --arg manifest_url "$manifest_url" \
     --arg manifest_revision "$manifest_revision" \
+    --arg manifest_sha256 "$manifest_sha256" \
     '{
-        version: {commit: $commit},
+        version: {commit: $commit, manifest_sha256: $manifest_sha256},
         metadata: [
             {name: "commit", value: $commit},
             {name: "message", value: $message},
             {name: "author", value: $author},
             {name: "date", value: $date},
             {name: "manifest_url", value: $manifest_url},
-            {name: "manifest_revision", value: $manifest_revision}
+            {name: "manifest_revision", value: $manifest_revision},
+            {name: "manifest_sha256", value: $manifest_sha256}
         ]
     }')
 
 rm "$payload"
 
-# Output metadata to stdout (fd 3)
-echo "$metadata" >&3
+echo "$result" >&3

@@ -10,10 +10,12 @@ cat > "$payload" <&0
 
 manifest_url=$(jq -r '.source.manifest_url // "https://github.com/zephyrproject-rtos/zephyr"' < "$payload")
 manifest_revision=$(jq -r '.source.manifest_revision // "main"' < "$payload")
+manifest_path=$(jq -r '.source.manifest_path // "west.yml"' < "$payload")
+current_commit=$(jq -r '.version.commit // ""' < "$payload")
+current_manifest_sha256=$(jq -r '.version.manifest_sha256 // ""' < "$payload")
+rm "$payload"
 
-current_version=$(jq -r '.version.commit // ""' < "$payload")
-
-# Get latest commit from remote without cloning
+# Get latest commit from the manifest repo without a full clone
 latest_commit=$(git ls-remote "$manifest_url" "refs/heads/$manifest_revision" | cut -f1)
 
 if [ -z "$latest_commit" ]; then
@@ -21,16 +23,44 @@ if [ -z "$latest_commit" ]; then
     exit 1
 fi
 
-# Generate version list
-if [ -n "$current_version" ] && [ "$current_version" != "null" ] && [ "$current_version" != "" ] && [ "$current_version" = "$latest_commit" ]; then
-    # No new version
-    versions=$(jq -n --arg commit "$current_version" '[{commit: $commit}]')
+# Compute a frozen manifest fingerprint to detect changes in branch-tracked
+# dependencies. west manifest --freeze resolves all project revisions (including
+# branch names) to their current SHAs by querying each remote, without requiring
+# a full west update.
+tmpdir=$(mktemp -d)
+trap "rm -rf $tmpdir" EXIT
+
+echo "Resolving frozen manifest for $manifest_url @ $manifest_revision..."
+
+# Shallow clone the manifest repo to avoid fetching full history
+git clone --depth=1 --branch "$manifest_revision" "$manifest_url" "$tmpdir/manifest"
+
+# Initialize a west workspace from the local clone
+west init -m "$tmpdir/manifest" --mf "$manifest_path" "$tmpdir/workspace"
+
+# Freeze the manifest: merges imports and converts all branch revisions to SHAs.
+# The resulting SHA256 changes whenever the manifest repo moves OR whenever any
+# branch-tracked dependency gets new commits.
+manifest_sha256=$(cd "$tmpdir/workspace" && west manifest --freeze | sha256sum | cut -d' ' -f1)
+
+echo "Manifest commit:  $latest_commit"
+echo "Manifest SHA256:  $manifest_sha256"
+
+if [ "$current_commit" = "$latest_commit" ] && \
+   [ -n "$current_manifest_sha256" ] && \
+   [ "$current_manifest_sha256" != "null" ] && \
+   [ "$current_manifest_sha256" = "$manifest_sha256" ]; then
+    # Nothing changed
+    versions=$(jq -n \
+        --arg commit "$current_commit" \
+        --arg sha256 "$current_manifest_sha256" \
+        '[{commit: $commit, manifest_sha256: $sha256}]')
 else
-    # New version available
-    versions=$(jq -n --arg commit "$latest_commit" '[{commit: $commit}]')
+    # New version detected
+    versions=$(jq -n \
+        --arg commit "$latest_commit" \
+        --arg sha256 "$manifest_sha256" \
+        '[{commit: $commit, manifest_sha256: $sha256}]')
 fi
 
-rm "$payload"
-
-# Output versions to stdout (fd 3)
 echo "$versions" >&3
