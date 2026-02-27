@@ -38,15 +38,17 @@ git clone --depth=1 --branch "$manifest_revision" "$manifest_url" "$tmpdir/manif
 # Initialize a west workspace from the local clone
 west init -m "$tmpdir/manifest" --mf "$manifest_path" "$tmpdir/workspace"
 
-# Compute a manifest fingerprint without cloning any projects:
-# - west manifest --resolve merges all imports into a single YAML (no cloning needed)
-# - for projects whose revision is a branch/tag name (not a fixed SHA), query
-#   their current remote HEAD via git ls-remote
-# The resulting SHA256 changes whenever the manifest content changes OR whenever
-# any branch-tracked dependency gets new commits.
-resolved=$(cd "$tmpdir/workspace" && west manifest --resolve)
-
-branch_projects=$(python3 -c "
+# Compute a manifest fingerprint without cloning any projects.
+# west manifest --resolve merges all imports into a single YAML; for manifests
+# with cross-repo project imports (e.g. a manifest that imports Zephyr's own
+# west.yml), this requires those projects to be cloned first (west update).
+# If resolve succeeds: hash the resolved YAML + the current remote HEADs of any
+# branch-tracked projects (via git ls-remote), so the fingerprint changes
+# whenever any branch-tracked dependency gets new commits.
+# If resolve fails: the manifest likely pins all dependencies to fixed SHAs, so
+# the manifest commit itself is a sufficient fingerprint.
+if resolved=$(cd "$tmpdir/workspace" && west manifest --resolve 2>/dev/null); then
+    branch_projects=$(python3 -c "
 import sys, yaml, re
 sha_re = re.compile(r'^[0-9a-fA-F]{40}$')
 for p in yaml.safe_load(sys.stdin).get('manifest', {}).get('projects', []):
@@ -55,14 +57,18 @@ for p in yaml.safe_load(sys.stdin).get('manifest', {}).get('projects', []):
         print(p['url'] + '\t' + rev)
 " <<< "$resolved")
 
-extra_shas=""
-while IFS=$'\t' read -r url rev; do
-    [ -z "$url" ] && continue
-    sha=$(git ls-remote "$url" "refs/heads/$rev" 2>/dev/null | cut -f1)
-    extra_shas="${extra_shas} ${url}@${sha}"
-done <<< "$branch_projects"
+    extra_shas=""
+    while IFS=$'\t' read -r url rev; do
+        [ -z "$url" ] && continue
+        sha=$(git ls-remote "$url" "refs/heads/$rev" 2>/dev/null | cut -f1)
+        extra_shas="${extra_shas} ${url}@${sha}"
+    done <<< "$branch_projects"
 
-manifest_sha256=$(printf '%s\n%s\n' "$resolved" "$extra_shas" | sha256sum | cut -d' ' -f1)
+    manifest_sha256=$(printf '%s\n%s\n' "$resolved" "$extra_shas" | sha256sum | cut -d' ' -f1)
+else
+    echo "west manifest --resolve unavailable (manifest has cross-repo imports requiring west update); using commit SHA as fingerprint." >&2
+    manifest_sha256="$latest_commit"
+fi
 
 echo "Manifest commit:  $latest_commit"
 echo "Manifest SHA256:  $manifest_sha256"
