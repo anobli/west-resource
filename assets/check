@@ -38,10 +38,26 @@ git clone --depth=1 --branch "$manifest_revision" "$manifest_url" "$tmpdir/manif
 # Initialize a west workspace from the local clone
 west init -m "$tmpdir/manifest" --mf "$manifest_path" "$tmpdir/workspace"
 
-# Freeze the manifest: merges imports and converts all branch revisions to SHAs.
+# Freeze the manifest: resolves all project revisions (including branch names) to SHAs.
 # The resulting SHA256 changes whenever the manifest repo moves OR whenever any
 # branch-tracked dependency gets new commits.
-manifest_sha256=$(cd "$tmpdir/workspace" && west manifest --freeze | sha256sum | cut -d' ' -f1)
+# west manifest --freeze requires branch-tracked projects to be cloned;
+# shallow-clone them on demand as reported by west.
+freeze_out=$(mktemp)
+freeze_err=$(mktemp)
+while ! (cd "$tmpdir/workspace" && west manifest --freeze) >"$freeze_out" 2>"$freeze_err"; do
+    uncloned=$(sed -n 's/.*cannot freeze; project \([^ ]*\) is uncloned.*/\1/p' "$freeze_err" | head -1)
+    if [ -z "$uncloned" ]; then
+        cat "$freeze_err" >&2
+        rm -f "$freeze_out" "$freeze_err"
+        echo "Error: west manifest --freeze failed" >&2
+        exit 1
+    fi
+    echo "Shallow-cloning branch-tracked project for manifest freeze: $uncloned" >&2
+    (cd "$tmpdir/workspace" && west update --fetch-opt "--depth=1" "$uncloned")
+done
+manifest_sha256=$(sha256sum < "$freeze_out" | cut -d' ' -f1)
+rm -f "$freeze_out" "$freeze_err"
 
 echo "Manifest commit:  $latest_commit"
 echo "Manifest SHA256:  $manifest_sha256"
