@@ -38,10 +38,31 @@ git clone --depth=1 --branch "$manifest_revision" "$manifest_url" "$tmpdir/manif
 # Initialize a west workspace from the local clone
 west init -m "$tmpdir/manifest" --mf "$manifest_path" "$tmpdir/workspace"
 
-# Freeze the manifest: merges imports and converts all branch revisions to SHAs.
-# The resulting SHA256 changes whenever the manifest repo moves OR whenever any
-# branch-tracked dependency gets new commits.
-manifest_sha256=$(cd "$tmpdir/workspace" && west manifest --freeze | sha256sum | cut -d' ' -f1)
+# Compute a manifest fingerprint without cloning any projects:
+# - west manifest --resolve merges all imports into a single YAML (no cloning needed)
+# - for projects whose revision is a branch/tag name (not a fixed SHA), query
+#   their current remote HEAD via git ls-remote
+# The resulting SHA256 changes whenever the manifest content changes OR whenever
+# any branch-tracked dependency gets new commits.
+resolved=$(cd "$tmpdir/workspace" && west manifest --resolve)
+
+branch_projects=$(python3 -c "
+import sys, yaml, re
+sha_re = re.compile(r'^[0-9a-fA-F]{40}$')
+for p in yaml.safe_load(sys.stdin).get('manifest', {}).get('projects', []):
+    rev = str(p.get('revision', 'HEAD'))
+    if not sha_re.match(rev):
+        print(p['url'] + '\t' + rev)
+" <<< "$resolved")
+
+extra_shas=""
+while IFS=$'\t' read -r url rev; do
+    [ -z "$url" ] && continue
+    sha=$(git ls-remote "$url" "refs/heads/$rev" 2>/dev/null | cut -f1)
+    extra_shas="${extra_shas} ${url}@${sha}"
+done <<< "$branch_projects"
+
+manifest_sha256=$(printf '%s\n%s\n' "$resolved" "$extra_shas" | sha256sum | cut -d' ' -f1)
 
 echo "Manifest commit:  $latest_commit"
 echo "Manifest SHA256:  $manifest_sha256"
